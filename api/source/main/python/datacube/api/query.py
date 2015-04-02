@@ -1250,6 +1250,9 @@ class TimeInterval(object):
         self.start = start_datetime
         self.end = end_datetime
 
+    def __str__(self):
+        return "TimeInterval from %s to %s" % (self.start.isoformat(), self.end.isoformat())
+
     def years(self):
         """
         Return a list of years included in this interval
@@ -1268,7 +1271,6 @@ class DatacubeQueryContext(object):
         self.db_credentials = db_credentials
 
     def tile_list(self, x_list, y_list, satellite_list, time_interval, dataset_list, sort=SortType.ASC):
-        print str(self.db_credentials)
         return list_tiles_as_list( \
             x_list, \
             y_list, \
@@ -1291,6 +1293,21 @@ class DatacubeQueryContext(object):
             time_interval.years(), \
             dataset_list, \
             filename, \
+            database=self.db_credentials.database, \
+            user=self.db_credentials.user, \
+            password=self.db_credentials.password, \
+            host=self.db_credentials.host, \
+            port=self.db_credentials.port, \
+            sort=sort)
+
+    def cell_list(self, x_list, y_list, satellite_list, time_interval, dataset_list, sort=SortType.ASC):
+        return list_cells_as_list( \
+            x_list, \
+            y_list, \
+            satellite_list, \
+            time_interval.start, \
+            time_interval.end, \
+            dataset_list, \
             database=self.db_credentials.database, \
             user=self.db_credentials.user, \
             password=self.db_credentials.password, \
