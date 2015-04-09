@@ -36,8 +36,10 @@ import logging
 import psycopg2
 import psycopg2.extras
 import sys
+import os
 from model import Tile, Cell
 from datetime import datetime
+from datacube.config import Config, DbCredentials
 
 _log = logging.getLogger(__name__)
 
@@ -1615,19 +1617,27 @@ class TimeInterval(object):
         self.start = start_datetime
         self.end = end_datetime
 
+    def year_range(self):
+        """
+        Return a range of years covered by this TimeInterval
+        """
+        return range(self.start.year, self.end.year+1)
+
 class DatacubeQueryContext(object):
     """
     An instance of DatacubeQueryContext provides the ablility to query a selected Datacube
     """
 
-    def __init__(self, db_credentials):
+    def __init__(self, db_credentials=None):
         """
         Instantiate a new DatacubeQueryContext using the supplied DbCredentials object
         """
+        if db_credentials is None:
+            config = Config(os.path.expanduser("~/.datacube/config"))
+            db_credentials = config.get_DbCredentials()
         self.db_credentials = db_credentials
 
     def tile_list(self, x_list, y_list, satellite_list, time_interval, dataset_list, sort=SortType.ASC):
-        print str(self.db_credentials)
         return list_tiles_as_list( \
             x_list, \
             y_list, \
@@ -1641,3 +1651,35 @@ class DatacubeQueryContext(object):
             host=self.db_credentials.host, \
             port=self.db_credentials.port, \
             sort=sort)
+
+    def cell_list(self, x_list, y_list, satellite_list, time_interval, dataset_list, sort=SortType.ASC):
+        return list_cells_as_list( \
+            x_list, \
+            y_list, \
+            satellite_list, \
+            time_interval.start, \
+            time_interval.end, \
+            dataset_list, \
+            database=self.db_credentials.database, \
+            user=self.db_credentials.user, \
+            password=self.db_credentials.password, \
+            host=self.db_credentials.host, \
+            port=self.db_credentials.port, \
+            sort=sort)
+
+    def tile_list_to_file(self, x_list, y_list, satellite_list, time_interval, dataset_list, \
+        filename, sort=SortType.ASC):
+        return list_tiles_to_file( \
+            x_list, \
+            y_list, \
+            satellite_list, \
+            time_interval.year_range(), \
+            dataset_list, \
+            filename, \
+            database=self.db_credentials.database, \
+            user=self.db_credentials.user, \
+            password=self.db_credentials.password, \
+            host=self.db_credentials.host, \
+            port=self.db_credentials.port, \
+            sort=sort)
+

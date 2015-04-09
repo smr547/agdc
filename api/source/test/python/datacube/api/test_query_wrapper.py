@@ -21,29 +21,26 @@ class TestQueryWrapper(unittest.TestCase):
                        database=config.get_db_database(), user=config.get_db_username(), \
                        password=config.get_db_password(), \
                        host=config.get_db_host(), port=config.get_db_port())
-        self.assertEqual(len(tiles), 327)
+        self.assertEqual(len(tiles), 523)
 
     def test_get_tiles_with_cube_context(self):
-        config = Config(os.path.expanduser("~/.datacube/config"))
         time_interval = TimeInterval(datetime(1950,1,1), datetime(2050,1,1))
-        print "type of time_interval = %s" % type(time_interval)
         satellite_list = [Satellite.LS7]
         dataset_list = [DatasetType.ARG25, DatasetType.PQ25, DatasetType.FC25]
 
-        cube = DatacubeQueryContext(config.get_DbCredentials())
+        cube = DatacubeQueryContext()
         tiles = cube.tile_list([123], [-25], satellite_list, time_interval, dataset_list)
 
-        self.assertEqual(len(tiles), 327)
+        self.assertEqual(len(tiles), 523)
 
     def test_get_cells_with_cube_context(self):
-        config = Config(os.path.expanduser("~/.datacube/config"))
         time_interval = TimeInterval(datetime(1950,1,1), datetime(2050,1,1))
-        satellite_list = ["LS5","LS7"]   # TODO: this should be a list of enumeration members
-        dataset_list = [DatasetType.ARG25, DatasetType.PQ25, DatasetType.DSM25]
+        satellite_list = [Satellite.LS5, Satellite.LS7]
+        dataset_list = [DatasetType.ARG25, DatasetType.PQ25]
         x = range(110, 155)
         y = range(-46, 0)
 
-        cube = DatacubeQueryContext(config.get_DbCredentials())
+        cube = DatacubeQueryContext()
         cells = cube.cell_list(x, y, satellite_list, time_interval, dataset_list)
 
         self.assertEqual(len(cells), 1000)
