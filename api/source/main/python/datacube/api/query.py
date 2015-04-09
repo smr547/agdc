@@ -39,10 +39,7 @@ import sys
 import os
 from model import Tile, Cell
 from datetime import datetime
-<<<<<<< HEAD
-=======
 from datacube.config import Config, DbCredentials
->>>>>>> stevenring/api_DbCredentials
 
 _log = logging.getLogger(__name__)
 
