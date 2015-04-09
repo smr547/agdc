@@ -36,8 +36,13 @@ import logging
 import psycopg2
 import psycopg2.extras
 import sys
+import os
 from model import Tile, Cell
 from datetime import datetime
+<<<<<<< HEAD
+=======
+from datacube.config import Config, DbCredentials
+>>>>>>> stevenring/api_DbCredentials
 
 _log = logging.getLogger(__name__)
 
@@ -1570,6 +1575,17 @@ def list_tiles_wkt_to_file(wkt, years, datasets, format, filename, database, use
 def visit_tiles_wkt(wkt, years, datasets, database, user, password, host=None, port=None):
     pass
 
+def result_generator(cursor, size=100):
+
+    while True:
+
+        results = cursor.fetchmany(size)
+
+        if not results:
+            break
+
+        for result in results:
+            yield result
 
 class TimeInterval(object):
     """
@@ -1603,24 +1619,24 @@ class TimeInterval(object):
         self.start = start_datetime
         self.end = end_datetime
 
-    def __str__(self):
-        return "TimeInterval from %s to %s" % (self.start.isoformat(), self.end.isoformat())
-
-    def years(self):
+    def year_range(self):
         """
-        Return a list of years included in this interval
+        Return a range of years covered by this TimeInterval
         """
-        return range(self.start.year, self.end.year)
+        return range(self.start.year, self.end.year+1)
 
 class DatacubeQueryContext(object):
     """
     An instance of DatacubeQueryContext provides the ablility to query a selected Datacube
     """
 
-    def __init__(self, db_credentials):
+    def __init__(self, db_credentials=None):
         """
         Instantiate a new DatacubeQueryContext using the supplied DbCredentials object
         """
+        if db_credentials is None:
+            config = Config(os.path.expanduser("~/.datacube/config"))
+            db_credentials = config.get_DbCredentials()
         self.db_credentials = db_credentials
 
     def tile_list(self, x_list, y_list, satellite_list, time_interval, dataset_list, sort=SortType.ASC):
@@ -1631,21 +1647,6 @@ class DatacubeQueryContext(object):
             time_interval.start, \
             time_interval.end, \
             dataset_list, \
-            database=self.db_credentials.database, \
-            user=self.db_credentials.user, \
-            password=self.db_credentials.password, \
-            host=self.db_credentials.host, \
-            port=self.db_credentials.port, \
-            sort=sort)
-    
-    def tiles_to_file(self, x_list, y_list, satellite_list, time_interval, dataset_list, filename, sort=SortType.ASC):
-        return list_tiles_to_file(
-            x_list, \
-            y_list, \
-            satellite_list, \
-            time_interval.years(), \
-            dataset_list, \
-            filename, \
             database=self.db_credentials.database, \
             user=self.db_credentials.user, \
             password=self.db_credentials.password, \
@@ -1667,16 +1668,20 @@ class DatacubeQueryContext(object):
             host=self.db_credentials.host, \
             port=self.db_credentials.port, \
             sort=sort)
-def result_generator(cursor, size=100):
 
-    while True:
-
-        results = cursor.fetchmany(size)
-
-        if not results:
-            break
-
-        for result in results:
-            yield result
-
+    def tile_list_to_file(self, x_list, y_list, satellite_list, time_interval, dataset_list, \
+        filename, sort=SortType.ASC):
+        return list_tiles_to_file( \
+            x_list, \
+            y_list, \
+            satellite_list, \
+            time_interval.year_range(), \
+            dataset_list, \
+            filename, \
+            database=self.db_credentials.database, \
+            user=self.db_credentials.user, \
+            password=self.db_credentials.password, \
+            host=self.db_credentials.host, \
+            port=self.db_credentials.port, \
+            sort=sort)
 
