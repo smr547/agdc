@@ -40,6 +40,7 @@ import os
 from model import Tile, Cell
 from datetime import datetime
 from datacube.config import Config, DbCredentials
+import tempfile
 
 _log = logging.getLogger(__name__)
 
@@ -1667,8 +1668,13 @@ class DatacubeQueryContext(object):
             sort=sort)
 
     def tile_list_to_file(self, x_list, y_list, satellite_list, time_interval, dataset_list, \
-        filename, sort=SortType.ASC):
-        return list_tiles_to_file( \
+        filename=None, sort=SortType.ASC):
+        if filename is None:
+            f = tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False)
+            filename = f.name
+            f.close()
+
+        list_tiles_to_file( \
             x_list, \
             y_list, \
             satellite_list, \
@@ -1681,4 +1687,6 @@ class DatacubeQueryContext(object):
             host=self.db_credentials.host, \
             port=self.db_credentials.port, \
             sort=sort)
+
+        return filename
 
