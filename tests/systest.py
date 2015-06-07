@@ -41,8 +41,8 @@ import json
 
 import psycopg2
 
-import dbutil
-from EOtools.execute import execute
+from agdc import dbutil
+from eotools.execute import execute
 
 #
 # Constants

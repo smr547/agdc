@@ -24,19 +24,21 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 # ===============================================================================
-from datetime import datetime
-import math
 
 
 __author__ = "Simon Oldfield"
 
 
+import math
 import logging
 import numpy
 import gdal
+import os
 from gdalconst import *
 from enum import Enum
-from datacube.api.model import Pq25Bands, Ls57Arg25Bands, Satellite, DatasetType
+from datacube.api.model import Pq25Bands, Ls57Arg25Bands, Satellite, DatasetType, Ls8Arg25Bands, Wofs25Bands, NdviBands
+from datacube.api.model import get_bands, EviBands, NbrBands, TciBands
+from datetime import datetime
 
 
 _log = logging.getLogger(__name__)
@@ -59,25 +61,6 @@ _log = logging.getLogger(__name__)
 #       - 12 = not cloud shadow (ACCA test)
 #       - 13 = not cloud shadow (FMASK test)
 
-# ### DEPRECATE AND REMOVE THESE IN FAVOUR OF THE ENUM!!!
-#
-# PQA_MASK = 0x3fff  # This represents bits 0-13 set
-# PQA_MASK_CONTIGUITY = 0x01FF
-# PQA_MASK_CLOUD = 0x0C00
-# PQA_MASK_CLOUD_SHADOW = 0x3000
-# PQA_MASK_SEA_WATER = 0x0200
-#
-# PQ_MASK_CLEAR = 16383               # bits 0 - 13 set
-# PQ_MASK_SATURATION = 255            # bits 0 - 7 set
-# PQ_MASK_SATURATION_OPTICAL = 159    # bits 0-4 and 7 set
-# PQ_MASK_SATURATION_THERMAL = 96     # bits 5,6 set
-# PQ_MASK_CONTIGUITY = 256            # bit 8 set
-# PQ_MASK_LAND = 512                  # bit 9 set
-# PQ_MASK_CLOUD_ACCA = 1024           # bit 10 set
-# PQ_MASK_CLOUD_FMASK = 2048          # bit 11 set
-# PQ_MASK_CLOUD_SHADOW_ACCA = 4096    # bit 12 set
-# PQ_MASK_CLOUD_SHADOW_FMASK = 8192   # bit 13 set
-
 class PqaMask(Enum):
     PQ_MASK_CLEAR = 16383               # bits 0 - 13 set
 
@@ -98,11 +81,38 @@ class PqaMask(Enum):
     PQ_MASK_CLOUD_SHADOW_FMASK = 8192   # bit 13 set
 
 
+class WofsMask(Enum):
+    DRY = 0
+    NO_DATA = 1
+    SATURATION_CONTIGUITY = 2
+    SEA_WATER = 4
+    TERRAIN_SHADOW = 8
+    HIGH_SLOPE = 16
+    CLOUD_SHADOW = 32
+    CLOUD = 64
+    WET = 128
+
+
+class OutputFormat(Enum):
+    __order__ = "GEOTIFF ENVI"
+
+    GEOTIFF = "GTiff"
+    ENVI = "ENVI"
+
+
 # Standard no data value
 NDV = -999
 
 INT16_MIN = numpy.iinfo(numpy.int16).min
 INT16_MAX = numpy.iinfo(numpy.int16).max
+
+UINT16_MIN = numpy.iinfo(numpy.uint16).min
+UINT16_MAX = numpy.iinfo(numpy.uint16).max
+
+BYTE_MIN = numpy.iinfo(numpy.ubyte).min
+BYTE_MAX = numpy.iinfo(numpy.ubyte).max
+
+NAN = numpy.nan
 
 
 def empty_array(shape, dtype=numpy.int16, ndv=-999):
@@ -172,16 +182,95 @@ def get_dataset_metadata(dataset):
 
         band_metadata[band] = DatasetBandMetaData(raster_band.GetNoDataValue(), raster_band.DataType)
 
-        raster_band = None
+        raster_band.FlushCache()
+        del raster_band
 
     dataset_metadata = DatasetMetaData((raster.RasterXSize, raster.RasterYSize), raster.GetGeoTransform(), raster.GetProjection(), band_metadata)
 
-    raster = None
+    raster.FlushCache()
+    del raster
 
     return dataset_metadata
 
 
 def get_dataset_data(dataset, bands=None, x=0, y=0, x_size=None, y_size=None):
+
+    # dataset_types_physical = [
+    #     DatasetType.ARG25, DatasetType.PQ25, DatasetType.FC25,
+    #     DatasetType.WATER,
+    #     DatasetType.DSM, DatasetType.DEM, DatasetType.DEM_HYDROLOGICALLY_ENFORCED, DatasetType.DEM_SMOOTHED]
+    #
+    # dataset_types_virtual_nbar = [
+    #     DatasetType.NDVI,
+    #     DatasetType.EVI,
+    #     DatasetType.NBR,
+    #     DatasetType.TCI
+    # ]
+
+    # NDVI calculated using RED and NIR from ARG25
+
+    if dataset.dataset_type == DatasetType.NDVI:
+
+        bands = get_bands(DatasetType.ARG25, dataset.satellite)
+
+        band_red = bands[Ls57Arg25Bands.RED.name]
+        band_nir = bands[Ls57Arg25Bands.NEAR_INFRARED.name]
+
+        data = read_dataset_data(dataset, bands=[band_red, band_nir], x=x, y=y, x_size=x_size, y_size=y_size)
+        data = calculate_ndvi(data[band_red], data[band_nir])
+
+        return {NdviBands.NDVI: data}
+
+    # EVI calculated using RED, BLUE and NIR from ARG25
+
+    elif dataset.dataset_type == DatasetType.EVI:
+
+        bands = get_bands(DatasetType.ARG25, dataset.satellite)
+
+        band_red = bands[Ls57Arg25Bands.RED.name]
+        band_blue = bands[Ls57Arg25Bands.BLUE.name]
+        band_nir = bands[Ls57Arg25Bands.NEAR_INFRARED.name]
+
+        data = read_dataset_data(dataset, bands=[band_red, band_blue, band_nir], x=x, y=y, x_size=x_size, y_size=y_size)
+        data = calculate_evi(data[band_red], data[band_blue], data[band_nir])
+
+        return {EviBands.EVI: data}
+
+    # NBR calculated using NIR and SWIR-2 from ARG25
+
+    elif dataset.dataset_type == DatasetType.NBR:
+
+        bands = get_bands(DatasetType.ARG25, dataset.satellite)
+
+        band_nir = bands[Ls57Arg25Bands.NEAR_INFRARED.name]
+        band_swir = bands[Ls57Arg25Bands.SHORT_WAVE_INFRARED_2.name]
+
+        data = read_dataset_data(dataset, bands=[band_nir, band_swir], x=x, y=y, x_size=x_size, y_size=y_size)
+        data = calculate_nbr(data[band_nir], data[band_swir])
+
+        return {NbrBands.NBR: data}
+
+    # TCI calculated from ARG25
+
+    elif dataset.dataset_type == DatasetType.TCI:
+
+        bands = get_bands(DatasetType.ARG25, dataset.satellite)
+
+        data = read_dataset_data(dataset, bands=bands, x=x, y=y, x_size=x_size, y_size=y_size)
+
+        out = dict()
+
+        for index in TasselCapIndex:
+            out[TciBands[index.name]] = calculate_tassel_cap_index(data, TCI_COEFFICIENTS[dataset.satellite][index])
+
+        return out
+
+    # It is a "physical" dataset so just read it
+    else:
+        return read_dataset_data(dataset, bands, x, y, x_size, y_size)
+
+
+def read_dataset_data(dataset, bands=None, x=0, y=0, x_size=None, y_size=None):
 
     """
     Return one or more bands from a dataset
@@ -217,25 +306,32 @@ def get_dataset_data(dataset, bands=None, x=0, y=0, x_size=None, y_size=None):
         data = band.ReadAsArray(x, y, x_size, y_size)
         out[b] = data
 
+        band.FlushCache()
+        del band
+
+    raster.FlushCache()
+    del raster
+
     return out
 
 
-DEFAULT_PQA_MASK = [PqaMask.PQ_MASK_CLEAR]
+DEFAULT_MASK_PQA = [PqaMask.PQ_MASK_CLEAR]
 
-def get_dataset_data_with_pq(dataset, pq_dataset, bands=None, x=0, y=0, x_size=None, y_size=None, pq_masks=DEFAULT_PQA_MASK):
+
+def get_dataset_data_masked(dataset, bands=None, x=0, y=0, x_size=None, y_size=None, ndv=NDV, mask=None):
 
     """
     Return one or more bands from the dataset with pixel quality applied
 
-    :param dataset: The dataset from which to read the band
-    :param pq_dataset: The pixel quality dataset
-    :param bands: A list of bands to read from the dataset
-    :param x:
-    :param y:
-    :param x_size:
-    :param y_size:
-    :param pq_mask: Required pixel quality mask to apply
-    :return: dictionary of band/data as numpy array
+    :type dataset: datacube.api.model.Dataset
+    :type bands: list[Band]
+    :type x: int
+    :type y: int
+    :type x_size: int
+    :type y_size: int
+    :type ndv: int
+    :type mask: numpy.array
+    :rtype: dict[numpy.array]
     """
 
     if not bands:
@@ -243,42 +339,71 @@ def get_dataset_data_with_pq(dataset, pq_dataset, bands=None, x=0, y=0, x_size=N
 
     out = get_dataset_data(dataset, bands, x=x, y=y, x_size=x_size, y_size=y_size)
 
-    data_pq = get_dataset_data(pq_dataset, [Pq25Bands.PQ], x=x, y=y, x_size=x_size, y_size=y_size)[Pq25Bands.PQ]
-
-    for band in bands:
-
-        out[band] = apply_pq(out[band], data_pq, pq_masks=pq_masks)
+    if mask is not None:
+        for band in bands:
+            out[band] = apply_mask(out[band], mask=mask, ndv=ndv)
 
     return out
 
 
-def apply_pq(dataset, pq, ndv=NDV, pq_masks=DEFAULT_PQA_MASK):
+def get_dataset_data_with_pq(dataset, dataset_pqa, bands=None, x=0, y=0, x_size=None, y_size=None, masks_pqa=DEFAULT_MASK_PQA, ndv=NDV):
 
-    # Get the PQ mask
-    mask = get_pq_mask(pq, pq_masks)
+    """
+    Return one or more bands from the dataset with pixel quality applied
 
-    # Apply the PQ mask to the dataset and fill masked entries with no data value
-    return numpy.ma.array(dataset, mask=mask).filled(ndv)
+    :type dataset: datacube.api.model.Dataset
+    :type dataset_pqa: datacube.api.model.Dataset
+    :type bands: list[Band]
+    :type x: int
+    :type y: int
+    :type x_size: int
+    :type y_size: int
+    :type masks_pqa: list[datacube.api.util.PqaMask]
+    :rtype: dict[numpy.array]
+    """
+
+    if not bands:
+        bands = dataset.bands
+
+    mask_pqa = get_mask_pqa(dataset_pqa, x=x, y=y, x_size=x_size, y_size=y_size, pqa_masks=masks_pqa)
+
+    out = get_dataset_data_masked(dataset, bands, x=x, y=y, x_size=x_size, y_size=y_size, mask=mask_pqa, ndv=ndv)
+
+    return out
 
 
-def get_pq_mask(pq, pq_masks=DEFAULT_PQA_MASK):
+def apply_mask(data, mask, ndv=NDV):
+    return numpy.ma.array(data, mask=mask).filled(ndv)
+
+
+def get_mask_pqa(pqa, pqa_masks=DEFAULT_MASK_PQA, x=0, y=0, x_size=None, y_size=None, mask=None):
 
     """
     Return a pixel quality mask
 
-    :param pq: Pixel Quality dataset
-    :param mask: which PQ flags to use
-    :return: the PQ mask
+    :param pqa: Pixel Quality dataset
+    :param pqa_masks: which PQ flags to use
+    :param mask: an optional existing mask to update
+    :return: the mask
     """
 
     # Consolidate the list of (bit) masks into a single (bit) mask
-    pq_mask = consolidate_pq_mask(pq_masks)
+    pqa_mask = consolidate_masks(pqa_masks)
+
+    # Read the PQA dataset
+    data = get_dataset_data(pqa, [Pq25Bands.PQ], x=x, y=y, x_size=x_size, y_size=y_size)[Pq25Bands.PQ]
+
+    # Create an empty mask if none provided - just to avoid an if below :)
+    if mask is None:
+        mask = numpy.ma.make_mask_none(numpy.shape(data))
 
     # Mask out values where the requested bits in the PQ value are not set
-    return numpy.ma.masked_where(pq & pq_mask != pq_mask, pq).mask
+    mask = numpy.ma.mask_or(mask, numpy.ma.masked_where(data & pqa_mask != pqa_mask, data).mask)
+
+    return mask
 
 
-def consolidate_pq_mask(masks):
+def consolidate_masks(masks):
     mask = 0x0000
 
     for m in masks:
@@ -287,10 +412,134 @@ def consolidate_pq_mask(masks):
     return mask
 
 
+DEFAULT_MASK_WOFS = [WofsMask.WET]
+
+
+def get_mask_wofs(wofs, wofs_masks=DEFAULT_MASK_WOFS, x=0, y=0, x_size=None, y_size=None, mask=None):
+
+    """
+    Return a WOFS mask
+
+    :param wofs: WOFS dataset
+    :param wofs_masks: which WOFS values to mask
+    :param mask: an optional existing mask to update
+    :return: the mask
+    """
+
+    # Read the WOFS dataset
+    data = get_dataset_data(wofs, bands=[Wofs25Bands.WATER], x=x, y=y, x_size=x_size, y_size=y_size)[Wofs25Bands.WATER]
+
+    if mask is None:
+        mask = numpy.ma.make_mask_none(numpy.shape(data))
+
+    # Mask out values where the WOFS value is one of the requested mask values
+    for wofs_mask in wofs_masks:
+        mask = numpy.ma.mask_or(mask, numpy.ma.masked_equal(data, wofs_mask.value).mask)
+
+    return mask
+
+
+def get_mask_vector_for_cell(x, y, vector_file, vector_layer, vector_feature, width=4000, height=4000,
+                             pixel_size_x=0.00025, pixel_size_y=-0.00025):
+
+    """
+    Return a mask for the given cell based on the specified feature in the vector file
+
+    :param x: X cell index
+    :type x: int
+    :param y: X cell
+    :type y: int
+    :param vector_file: Vector file containing the mask polygon
+    :type vector_file: str
+    :param vector_layer: Layer name within the vector file
+    :type vector_layer: str
+    :param vector_feature: Feature id (index starts at 0) within the layer
+    :type vector_feature: int
+    :param width: Width of the mask
+    :type width: int
+    :param height: Height of the mask
+    :type height: int
+    :param pixel_size_x: X pixel size
+    :type pixel_size_x: float
+    :param pixel_size_y: Y pixel size
+    :type pixel_size_y: float
+
+    :return: The mask
+    :rtype: numpy.ma.MaskedArray.mask (array of boolean)
+    """
+
+    import gdal
+    import osr
+
+    driver = gdal.GetDriverByName("MEM")
+    assert driver
+
+    raster = driver.Create("", width, height, 1, gdal.GDT_Byte)
+    assert raster
+
+    raster.SetGeoTransform((x, pixel_size_x, 0.0, y+1, 0.0, pixel_size_y))
+
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(4326)
+
+    raster.SetProjection(srs.ExportToWkt())
+
+    _log.debug("Reading feature [%d] from layer [%d] of file [%s]", vector_feature, vector_layer, vector_file)
+
+    import ogr
+    from gdalconst import GA_ReadOnly
+
+    vector = ogr.Open(vector_file, GA_ReadOnly)
+    assert vector
+
+    # layer = vector.GetLayer()
+    # assert layer
+
+    # layer = vector.GetLayerByName(vector_layer)
+    # assert layer
+
+    layer = vector.GetLayerByIndex(vector_layer)
+    assert layer
+
+    layer.SetAttributeFilter("FID={fid}".format(fid=vector_feature))
+
+    gdal.RasterizeLayer(raster, [1], layer, burn_values=[1])
+
+    del layer
+
+    band = raster.GetRasterBand(1)
+    assert band
+
+    data = band.ReadAsArray()
+    import numpy
+
+    _log.debug("Read [%s] from memory AOI mask dataset", numpy.shape(data))
+    return numpy.ma.masked_not_equal(data, 1, copy=False).mask
+
+
+# TODO generalise/refactor this!!!
+
 def raster_create(path, data, transform, projection, no_data_value, data_type,
                   # options=["INTERLEAVE=PIXEL", "COMPRESS=DEFLATE", "PREDICTOR=2", "ZLEVEL=9"]):
                   # options=["INTERLEAVE=PIXEL", "COMPRESS=DEFLATE", "PREDICTOR=1", "ZLEVEL=6"]):
-                  options=["INTERLEAVE=PIXEL"]):
+                  options=["INTERLEAVE=PIXEL"],
+                  # options=["INTERLEAVE=PIXEL", "COMPRESS=LZW"],
+                  # options=["INTERLEAVE=PIXEL", "COMPRESS=LZW", "TILED=YES"],
+                  width=None, height=None, dataset_metadata=None, band_ids=None):
+    raster_create_geotiff(path, data, transform, projection, no_data_value, data_type, options, width, height,
+                          dataset_metadata, band_ids)
+
+
+# TODO I've dodgied this to get band names in.  Should redo it properly so you pass in a lit of band data structures
+# that have a name, the data, the NDV, etc
+
+def raster_create_geotiff(path, data, transform, projection, no_data_value, data_type,
+                  # options=["INTERLEAVE=PIXEL", "COMPRESS=DEFLATE", "PREDICTOR=2", "ZLEVEL=9"]):
+                  # options=["INTERLEAVE=PIXEL", "COMPRESS=DEFLATE", "PREDICTOR=1", "ZLEVEL=6"]):
+                  options=["INTERLEAVE=PIXEL"],
+                  # options=["INTERLEAVE=PIXEL", "COMPRESS=LZW"],
+                  # options=["INTERLEAVE=PIXEL", "COMPRESS=LZW", "TILED=YES"],
+                  width=None, height=None, dataset_metadata=None, band_ids=None):
     """
     Create a raster from a list of numpy arrays
 
@@ -310,23 +559,90 @@ def raster_create(path, data, transform, projection, no_data_value, data_type,
     driver = gdal.GetDriverByName("GTiff")
     assert driver
 
-    dataset = driver.Create(path, numpy.shape(data[0])[1], numpy.shape(data[0])[0],
-                            len(data), data_type,
-                            options)
-    assert dataset
+    width = width or numpy.shape(data[0])[1]
+    height = height or numpy.shape(data[0])[0]
 
-    dataset.SetGeoTransform(transform)
-    dataset.SetProjection(projection)
+    raster = driver.Create(path, width, height, len(data), data_type, options)
+    assert raster
+
+    raster.SetGeoTransform(transform)
+    raster.SetProjection(projection)
+
+    if dataset_metadata:
+        raster.SetMetadata(dataset_metadata)
 
     for i in range(0, len(data)):
         _log.debug("Writing band %d", i + 1)
-        dataset.GetRasterBand(i + 1).SetNoDataValue(no_data_value)
-        dataset.GetRasterBand(i + 1).WriteArray(data[i])
-        dataset.GetRasterBand(i + 1).ComputeStatistics(True)
 
-    dataset.FlushCache()
+        band = raster.GetRasterBand(i + 1)
 
-    dataset = None
+        if band_ids and len(band_ids) - 1 >= i:
+            band.SetDescription(band_ids[i])
+        band.SetNoDataValue(no_data_value)
+        band.WriteArray(data[i])
+        band.ComputeStatistics(True)
+
+        band.FlushCache()
+        del band
+
+    raster.FlushCache()
+    del raster
+
+
+def raster_create_envi(path, data, transform, projection, no_data_value, data_type,
+                  # options=["INTERLEAVE=PIXEL", "COMPRESS=DEFLATE", "PREDICTOR=2", "ZLEVEL=9"]):
+                  # options=["INTERLEAVE=PIXEL", "COMPRESS=DEFLATE", "PREDICTOR=1", "ZLEVEL=6"]):
+                  options=["INTERLEAVE=BSQ"],
+                  # options=["INTERLEAVE=PIXEL", "COMPRESS=LZW"],
+                  # options=["INTERLEAVE=PIXEL", "COMPRESS=LZW", "TILED=YES"],
+                  width=None, height=None, dataset_metadata=None, band_ids=None):
+    """
+    Create a raster from a list of numpy arrays
+
+    :param path: path to the output raster
+    :param data: list of numpy arrays
+    :param transform: geo transform
+    :param projection: projection
+    :param no_data_value: no data value
+    :param data_type: data type
+    :param options: raster creation options
+    """
+
+    _log.debug("creating output raster %s", path)
+    _log.debug("filename=%s | shape = %s | bands = %d | data type = %s", path, (numpy.shape(data[0])[0], numpy.shape(data[0])[1]),
+               len(data), data_type)
+
+    driver = gdal.GetDriverByName("ENVI")
+    assert driver
+
+    width = width or numpy.shape(data[0])[1]
+    height = height or numpy.shape(data[0])[0]
+
+    raster = driver.Create(path, width, height, len(data), data_type, options)
+    assert raster
+
+    raster.SetGeoTransform(transform)
+    raster.SetProjection(projection)
+
+    if dataset_metadata:
+        raster.SetMetadata(dataset_metadata)
+
+    for i in range(0, len(data)):
+        _log.debug("Writing band %d", i + 1)
+
+        band = raster.GetRasterBand(i + 1)
+
+        if band_ids and len(band_ids) - 1 >= i:
+            band.SetDescription(band_ids[i])
+        band.SetNoDataValue(no_data_value)
+        band.WriteArray(data[i])
+        band.ComputeStatistics(True)
+
+        band.FlushCache()
+        del band
+
+    raster.FlushCache()
+    del raster
 
 
 def propagate_using_selected_pixel(a, b, c, d, ndv=NDV):
@@ -396,7 +712,7 @@ def calculate_nbr(nir, swir, input_ndv=NDV, output_ndv=NDV):
 
 
 class TasselCapIndex(Enum):
-    __order__ = "BRIGHTNESS GREENNESS WETNESS"
+    __order__ = "BRIGHTNESS GREENNESS WETNESS FOURTH FIFTH SIXTH"
 
     BRIGHTNESS = 1
     GREENNESS = 2
@@ -507,6 +823,57 @@ TCI_COEFFICIENTS = {
             Ls57Arg25Bands.NEAR_INFRARED: 0.0602,
             Ls57Arg25Bands.SHORT_WAVE_INFRARED_1: -0.1095,
             Ls57Arg25Bands.SHORT_WAVE_INFRARED_2: 0.0985}
+    },
+
+    Satellite.LS8:
+    {
+        TasselCapIndex.BRIGHTNESS: {
+            Ls8Arg25Bands.BLUE: 0.3029,
+            Ls8Arg25Bands.GREEN: 0.2786,
+            Ls8Arg25Bands.RED: 0.4733,
+            Ls8Arg25Bands.NEAR_INFRARED: 0.5599,
+            Ls8Arg25Bands.SHORT_WAVE_INFRARED_1: 0.508,
+            Ls8Arg25Bands.SHORT_WAVE_INFRARED_2: 0.1872},
+
+        TasselCapIndex.GREENNESS: {
+            Ls8Arg25Bands.BLUE: -0.2941,
+            Ls8Arg25Bands.GREEN: -0.2430,
+            Ls8Arg25Bands.RED: -0.5424,
+            Ls8Arg25Bands.NEAR_INFRARED: 0.7276,
+            Ls8Arg25Bands.SHORT_WAVE_INFRARED_1: 0.0713,
+            Ls8Arg25Bands.SHORT_WAVE_INFRARED_2: -0.1608},
+
+        TasselCapIndex.WETNESS: {
+            Ls8Arg25Bands.BLUE: 0.1511,
+            Ls8Arg25Bands.GREEN: 0.1973,
+            Ls8Arg25Bands.RED: 0.3283,
+            Ls8Arg25Bands.NEAR_INFRARED: 0.3407,
+            Ls8Arg25Bands.SHORT_WAVE_INFRARED_1: -0.7117,
+            Ls8Arg25Bands.SHORT_WAVE_INFRARED_2: -0.4559},
+
+        TasselCapIndex.FOURTH: {
+            Ls8Arg25Bands.BLUE: -0.8239,
+            Ls8Arg25Bands.GREEN: 0.0849,
+            Ls8Arg25Bands.RED: 0.4396,
+            Ls8Arg25Bands.NEAR_INFRARED: -0.058,
+            Ls8Arg25Bands.SHORT_WAVE_INFRARED_1: 0.2013,
+            Ls8Arg25Bands.SHORT_WAVE_INFRARED_2: -0.2773},
+
+        TasselCapIndex.FIFTH: {
+            Ls8Arg25Bands.BLUE: -0.3294,
+            Ls8Arg25Bands.GREEN: 0.0557,
+            Ls8Arg25Bands.RED: 0.1056,
+            Ls8Arg25Bands.NEAR_INFRARED: 0.1855,
+            Ls8Arg25Bands.SHORT_WAVE_INFRARED_1: -0.4349,
+            Ls8Arg25Bands.SHORT_WAVE_INFRARED_2: 0.8085},
+
+        TasselCapIndex.SIXTH: {
+            Ls8Arg25Bands.BLUE: 0.1079,
+            Ls8Arg25Bands.GREEN: -0.9023,
+            Ls8Arg25Bands.RED: 0.4119,
+            Ls8Arg25Bands.NEAR_INFRARED: 0.0575,
+            Ls8Arg25Bands.SHORT_WAVE_INFRARED_1: -0.0259,
+            Ls8Arg25Bands.SHORT_WAVE_INFRARED_2: 0.0252}
     }
 }
 
@@ -530,7 +897,8 @@ def calculate_tassel_cap_index(bands, coefficients, input_ndv=NDV, output_ndv=nu
     tci = 0
 
     for b in bands:
-        tci += bands_masked[b] * coefficients[b]
+        if b in coefficients:
+            tci += bands_masked[b] * coefficients[b]
 
     tci = tci.filled(output_ndv)
 
@@ -595,8 +963,8 @@ def latlon_to_cell(lat, lon):
     Return the cell that contains the given lat/lon pair
 
     NOTE: x of cell represents min (contained) lon value but y of cell represents max (not contained) lat value
-        that is, 120_-20 contains lon values 120->120.99999 but lat values -19->-19.99999
-        that is, that is, 120_-20 does NOT contain lat value of -20
+        that is, 120/-20 contains lon values 120->120.99999 but lat values -19->-19.99999
+        that is, that is, 120/-20 does NOT contain lat value of -20
 
     :param lat: latitude
     :param lon: longitude
@@ -648,11 +1016,244 @@ def extract_fields_from_filename(filename):
 
     return satellite, dataset_type, x, y, acq_dt
 
+
 def intersection(a, b):
     return list(set(a) & set(b))
+
 
 def union(a, b):
     return list(set(a) | set(b))
 
+
 def subset(a, b):
     return set(a) <= set(b)
+
+
+def get_satellite_string(satellites):
+    # TODO this assumes everything is Landsat!!!!
+    return "LS" + "".join([s.value.replace("LS", "") for s in satellites])
+
+
+def check_overwrite_remove_or_fail(path, overwrite):
+
+    if os.path.exists(path):
+        if overwrite:
+            _log.info("Removing existing output file [%s]", path)
+            os.remove(path)
+        else:
+            _log.error("Output file [%s] exists", path)
+            raise Exception("File [%s] exists" % path)
+
+
+def log_mem(s=None):
+
+    if s and len(s) > 0:
+        _log.info(s)
+
+    import psutil
+
+    _log.info("Current memory usage is [%s]", psutil.Process().memory_info())
+    _log.info("Current memory usage is [%d] MB", psutil.Process().memory_info().rss / 1024 / 1024)
+
+    import resource
+
+    _log.info("Current MAX RSS  usage is [%d] MB", resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024)
+
+
+def date_to_integer(d):
+    # Return an integer representing the YYYYMMDD value
+    return d.year * 10000 + d.month * 100 + d.day
+
+
+def get_dataset_filename(dataset, output_format=OutputFormat.GEOTIFF,
+                         mask_pqa_apply=False, mask_wofs_apply=False, mask_vector_apply=False):
+
+    filename = dataset.path
+
+    filename = os.path.basename(filename)
+
+    dataset_type_from_string = {
+        DatasetType.ARG25: "_NBAR_",
+        DatasetType.PQ25: "_PQA_",
+        DatasetType.FC25: "_FC_",
+        DatasetType.WATER: "_WATER_",
+        DatasetType.NDVI: "_NBAR_",
+        DatasetType.EVI: "_NBAR_",
+        DatasetType.NBR: "_NBAR_",
+        DatasetType.TCI: "_NBAR_",
+        DatasetType.DSM: "DSM_"
+    }[dataset.dataset_type]
+
+    dataset_type_to_string = {
+        DatasetType.ARG25: "_NBAR_",
+        DatasetType.PQ25: "_PQA_",
+        DatasetType.FC25: "_FC_",
+        DatasetType.WATER: "_WATER_",
+        DatasetType.NDVI: "_NDVI_",
+        DatasetType.EVI: "_EVI_",
+        DatasetType.NBR: "_NBR_",
+        DatasetType.TCI: "_TCI_",
+        DatasetType.DSM: "DSM_"
+    }[dataset.dataset_type]
+
+    dataset_type_to_string += ((mask_pqa_apply or mask_wofs_apply or mask_vector_apply) and "WITH_" or "") + \
+                              (mask_pqa_apply and "PQA_" or "") + \
+                              (mask_wofs_apply and "WATER_" or "") + \
+                              (mask_vector_apply and "VECTOR_" or "")
+
+    filename = filename.replace(dataset_type_from_string, dataset_type_to_string)
+
+    ext = {OutputFormat.GEOTIFF: ".tif", OutputFormat.ENVI: ".dat"}[output_format]
+
+    filename = filename.replace(".vrt", ext)
+    filename = filename.replace(".tiff", ext)
+    filename = filename.replace(".tif", ext)
+
+    return filename
+
+
+def get_dataset_band_stack_filename(dataset, band, output_format=OutputFormat.GEOTIFF,
+                                    mask_pqa_apply=False, mask_wofs_apply=False, mask_vector_apply=False):
+
+    filename = dataset.path
+
+    filename = os.path.basename(filename)
+
+    dataset_type_from_string = {
+        DatasetType.ARG25: "_NBAR_",
+        DatasetType.PQ25: "_PQA_",
+        DatasetType.FC25: "_FC_",
+        DatasetType.WATER: "_WATER_",
+        DatasetType.NDVI: "_NBAR_",
+        DatasetType.EVI: "_NBAR_",
+        DatasetType.NBR: "_NBAR_",
+        DatasetType.TCI: "_NBAR_",
+        DatasetType.DSM: "DSM_"
+    }[dataset.dataset_type]
+
+    dataset_type_to_string = {
+        DatasetType.ARG25: "_NBAR_",
+        DatasetType.PQ25: "_PQA_",
+        DatasetType.FC25: "_FC_",
+        DatasetType.WATER: "_WATER_",
+        DatasetType.NDVI: "_NDVI_",
+        DatasetType.EVI: "_EVI_",
+        DatasetType.NBR: "_NBR_",
+        DatasetType.TCI: "_TCI_",
+        DatasetType.DSM: "DSM_"
+    }[dataset.dataset_type]
+
+    dataset_type_to_string += ((mask_pqa_apply or mask_wofs_apply or mask_vector_apply) and "WITH_" or "") + \
+                              (mask_pqa_apply and "PQA_" or "") + \
+                              (mask_wofs_apply and "WATER_" or "") + \
+                              (mask_vector_apply and "VECTOR_" or "")
+
+    dataset_type_to_string += "STACK_" + band.name + "_"
+
+    filename = filename.replace(dataset_type_from_string, dataset_type_to_string)
+
+    ext = {OutputFormat.GEOTIFF: ".tif", OutputFormat.ENVI: ".dat"}[output_format]
+
+    filename = filename.replace(".vrt", ext)
+    filename = filename.replace(".tiff", ext)
+    filename = filename.replace(".tif", ext)
+
+    return filename
+
+
+def get_dataset_datatype(dataset):
+    return {
+        DatasetType.ARG25: GDT_Int16,
+        DatasetType.PQ25: GDT_Int16,
+        DatasetType.FC25: GDT_Int16,
+        DatasetType.WATER: GDT_Byte,
+        DatasetType.NDVI: GDT_Float32,
+        DatasetType.EVI: GDT_Float32,
+        DatasetType.NBR: GDT_Float32,
+        DatasetType.TCI: GDT_Float32,
+        DatasetType.DSM: GDT_Int16
+    }[dataset.dataset_type]
+
+
+def get_dataset_ndv(dataset):
+    return {
+        DatasetType.ARG25: NDV,
+        DatasetType.PQ25: UINT16_MAX,
+        DatasetType.FC25: NDV,
+        DatasetType.WATER: BYTE_MAX,
+        DatasetType.NDVI: NAN,
+        DatasetType.EVI: NAN,
+        DatasetType.NBR: NAN,
+        DatasetType.TCI: NAN,
+        DatasetType.DSM: NDV
+    }[dataset.dataset_type]
+
+
+def get_band_name_union(dataset_type, satellites):
+
+    bands = [b.name for b in get_bands(dataset_type, satellites[0])]
+
+    for satellite in satellites[1:]:
+        for b in get_bands(dataset_type, satellite):
+            if b.name not in bands:
+                bands.append(b.name)
+
+    return bands
+
+
+def get_band_name_intersection(dataset_type, satellites):
+
+    bands = [b.name for b in get_bands(dataset_type, satellites[0])]
+
+    for satellite in satellites[1:]:
+        for band in bands:
+            if band not in [b.name for b in get_bands(dataset_type, satellite)]:
+                bands.remove(band)
+
+    return bands
+
+
+def format_date(d):
+    from datetime import datetime
+
+    if d:
+        return datetime.strftime(d, "%Y_%m_%d")
+
+    return None
+
+
+def format_date_time(d):
+    from datetime import datetime
+
+    if d:
+        return datetime.strftime(d, "%Y_%m_%d_%H_%M_%S")
+
+    return None
+
+
+def extract_feature_geometry_wkb(vector_file, vector_layer=0, vector_feature=0, epsg=4326):
+
+    import ogr
+    import osr
+    from gdalconst import GA_ReadOnly
+
+    vector = ogr.Open(vector_file, GA_ReadOnly)
+    assert vector
+
+    layer = vector.GetLayer(vector_layer)
+    assert layer
+
+    feature = layer.GetFeature(vector_feature)
+    assert feature
+
+    projection = osr.SpatialReference()
+    projection.ImportFromEPSG(epsg)
+
+    geom = feature.GetGeometryRef()
+
+    # Transform if required
+
+    if not projection.IsSame(geom.GetSpatialReference()):
+        geom.TransformTo(projection)
+
+    return geom.ExportToWkb()

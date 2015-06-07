@@ -48,7 +48,7 @@ _log = logging.getLogger()
 
 
 class WetnessSummaryTask(SummaryTask):
-    def create_cell_task(self, x, y):
+    def create_cell_tasks(self, x, y):
         return WetnessCellTask(x=x, y=y, year_min=self.year_min, year_max=self.year_max,
                                satellites=self.satellites, output_directory=self.output_directory, csv=self.csv,
                                dummy=self.dummy)
@@ -184,7 +184,7 @@ class WetnessWorkflow(Workflow):
     def __init__(self):
         Workflow.__init__(self, application_name="Wetness in the Landscape")
 
-    def create_tasks(self):
+    def create_summary_tasks(self):
         return [WetnessSummaryTask(x_min=self.x_min, x_max=self.x_max, y_min=self.y_min, y_max=self.y_max,
                                    year_min=self.year_min, year_max=self.year_max, satellites=self.satellites,
                                    output_directory=self.output_directory, csv=self.csv, dummy=self.dummy)]
