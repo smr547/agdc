@@ -32,6 +32,8 @@ __author__ = "Simon Oldfield"
 
 
 import logging
+from datetime import datetime
+import re
 from enum import Enum
 import os
 
@@ -429,11 +431,52 @@ def warp_file_paths(path):
 
     return path
 
+# a regex to match an "ISO8601-like" datetime string
 
-# TODO
+DT_PAT = re.compile( \
+    "(?:.*)" + \
+    "(?P<year>\\d{4})" + "-" + \
+    "(?P<month>\\d{2})" + "-" + \
+    "(?P<day>\\d{2})" + "(?:T|\\s+)" + \
+    "(?P<hrs>\\d{2})" + "(?::|-)" + \
+    "(?P<mins>\\d{2})" + "(?::|-)" + \
+    "(?P<secs>\\d{2})" + \
+    "\\.?(?P<usecs>\d+)?" +
+    "(?:.*)")
+
 def parse_datetime(s):
-    from datetime import datetime
-    return datetime.strptime(s[:len("YYYY-MM-DD HH:MM:SS")], "%Y-%m-%d %H:%M:%S")
+    """
+    Search the supplied string for a "ISO8601-like" datetime 
+    and return equivalent datetime object.
+
+    This function will handle all know date/time formats used in AGDC database and 
+    file name.
+
+    :param s:
+       String containing an ISO8601 datetime string or 
+       some close approximation
+
+    :return:
+       A naive datetime instance corresponding to a matching
+       datetime found in the dt_string, or None if no datetime
+       is found
+    """
+
+    dt = None
+    m = DT_PAT.match(s)
+    if m is not None:
+        usecs = 0
+        if m.group('usecs') is not None:
+            usecs = int(m.group('usecs'))
+        dt = datetime( \
+            int(m.group('year')),
+            int(m.group('month')),
+            int(m.group('day')),
+            int(m.group('hrs')),
+            int(m.group('mins')),
+            int(m.group('secs')),
+            usecs)
+    return dt
 
 
 # TODO TEMPORARY UNTIL WOFS IS AVAILABLE AS INGESTED DATA
